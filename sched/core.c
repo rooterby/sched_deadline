@@ -2110,6 +2110,7 @@ static int dl_overflow(struct task_struct *p, int policy,
 }
 
 extern void init_dl_bw(struct dl_bw *dl_b);
+extern void init_dl_stat(struct dl_stats *dl_stats);
 
 /*
  * wake_up_new_task - wake up a newly created task for the first time.
@@ -5596,6 +5597,8 @@ static int init_rootdomain(struct root_domain *rd)
 		goto free_dlo_mask;
 
 	init_dl_bw(&rd->dl_bw);
+	init_dl_stats(&rd->dl_stats);
+
 	if (cpudl_init(&rd->cpudl) != 0)
 		goto free_dlo_mask;
 

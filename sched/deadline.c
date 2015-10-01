@@ -69,6 +69,16 @@ void init_dl_bw(struct dl_bw *dl_b)
 	dl_b->total_bw = 0;
 }
 
+void init_dl_stats(struct dl_stats *dl_stats)
+{
+	raw_spin_lock_init(&dl_stats->dl_stat_lock);
+	
+	dl_stats->sum_dl_nr_running = 0;
+	dl_stats->avg_bw = 0;
+
+	dl_stats->busiest = NULL;
+}
+
 void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 {
 	dl_rq->rb_root = RB_ROOT;
@@ -82,6 +92,7 @@ void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 	dl_rq->pushable_dl_tasks_root = RB_ROOT;
 #else
 	init_dl_bw(&dl_rq->dl_bw);
+	init_dl_stats(&dl_rq->dl_stats);
 #endif
 }
 
