@@ -3444,8 +3444,10 @@ recheck:
 		if (policy != SCHED_DEADLINE &&
 				policy != SCHED_FIFO && policy != SCHED_RR &&
 				policy != SCHED_NORMAL && policy != SCHED_BATCH &&
-				policy != SCHED_IDLE)
+				policy != SCHED_IDLE) {
+			printk("__sched_setscheduler: policy checking\n");
 			return -EINVAL;
+		}
 	}
 
 	if (attr->sched_flags & ~(SCHED_FLAG_RESET_ON_FORK))
@@ -3469,8 +3471,10 @@ recheck:
 	if (user && !capable(CAP_SYS_NICE)) {
 		if (fair_policy(policy)) {
 			if (attr->sched_nice < task_nice(p) &&
-			    !can_nice(p, attr->sched_nice))
+			    !can_nice(p, attr->sched_nice)) {
+				printk("__sched_setscheduler: fair scheduler policy checking\n");
 				return -EPERM;
+			}
 		}
 
 		if (rt_policy(policy)) {
@@ -3478,13 +3482,17 @@ recheck:
 					task_rlimit(p, RLIMIT_RTPRIO);
 
 			/* can't set/change the rt policy */
-			if (policy != p->policy && !rlim_rtprio)
+			if (policy != p->policy && !rlim_rtprio) {
+				printk("__sched_setscheduler: rt policy checking\n");
 				return -EPERM;
+			}
 
 			/* can't increase priority */
 			if (attr->sched_priority > p->rt_priority &&
-			    attr->sched_priority > rlim_rtprio)
+			    attr->sched_priority > rlim_rtprio) {
+				printk("__sched_setscheduler: can't increase priority checking\n");
 				return -EPERM;
+			}
 		}
 
 		 /*
@@ -3493,16 +3501,20 @@ recheck:
 		  * unprivileged DL tasks to increase their relative deadline
 		  * or reduce their runtime (both ways reducing utilization)
 		  */
-		if (dl_policy(policy))
+		if (dl_policy(policy)) {
+			printk("__sched_setscheduler: dl_task checking\n");
 			return -EPERM;
+		}
 
 		/*
 		 * Treat SCHED_IDLE as nice 20. Only allow a switch to
 		 * SCHED_NORMAL if the RLIMIT_NICE would normally permit it.
 		 */
 		if (p->policy == SCHED_IDLE && policy != SCHED_IDLE) {
-			if (!can_nice(p, task_nice(p)))
+			if (!can_nice(p, task_nice(p))) {
+				printk("__sched_setscheduler: SCHED_IDLE checking\n");
 				return -EPERM;
+			}
 		}
 
 		/* can't change other user's priorities */
@@ -3580,6 +3592,7 @@ change:
 			if (!cpumask_subset(span, &p->cpus_allowed) ||
 			    rq->rd->dl_bw.bw == 0) {
 				task_rq_unlock(rq, p, &flags);
+				printk("__sched_setscheduler: SCHED_DEADLINE affinity subset checking\n");
 				return -EPERM;
 			}
 		}
@@ -3599,6 +3612,7 @@ change:
 	 * is available.
 	 */
 	if ((dl_policy(policy) || dl_task(p)) && dl_overflow(p, policy, attr)) {
+		printk("__sched_setscheduler: dl_busy checking\n");
 		task_rq_unlock(rq, p, &flags);
 		return -EBUSY;
 	}
