@@ -2019,6 +2019,11 @@ inline struct dl_bw *dl_bw_of(int i)
 			   "sched RCU must be held");
 	return &cpu_rq(i)->rd->dl_bw;
 }
+inline struct dl_bw *dl_bw_of_rq(int i)
+{
+	rcu_lockdep_assert(rcu_read_lock_sched_held(), "sched RCU must be held");
+	return &cpu_rq(i)->dl.dl_bw;
+}
 
 static inline int dl_bw_cpus(int i)
 {
@@ -2032,6 +2037,7 @@ static inline int dl_bw_cpus(int i)
 
 	return cpus;
 }
+
 #else
 inline struct dl_bw *dl_bw_of(int i)
 {
@@ -2074,8 +2080,12 @@ bool __dl_overflow(struct dl_bw *dl_b, int cpus, u64 old_bw, u64 new_bw)
 static int dl_overflow(struct task_struct *p, int policy,
 		       const struct sched_attr *attr)
 {
-
+#ifdef CONFIG_SMP
+	struct dl_bw *glob_dl_b = dl_bw_of(task_cpu(p));
+	struct dl_bw *rq_dl_b = dl_bw_of_rq(task_cpu(p));
+#else
 	struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
+#endif
 	u64 period = attr->sched_period ?: attr->sched_deadline;
 	u64 runtime = attr->sched_runtime;
 	u64 new_bw = dl_policy(policy) ? to_ratio(period, runtime) : 0;
@@ -2089,6 +2099,29 @@ static int dl_overflow(struct task_struct *p, int policy,
 	 * its parameters, we may need to update accordingly the total
 	 * allocated bandwidth of the container.
 	 */
+#ifdef CONFIG_SMP
+	raw_spin_lock(&glob_dl_b->lock);
+	raw_spin_lock(&rq_dl_b->lock);
+	cpus = dl_bw_cpus(task_cpu(p));
+	if ( dl_policy(policy) && !task_has_dl_policy(p) && !__dl_overflow(glob_dl_b, cpus, 0, new_bw)) {
+		__dl_add(glob_dl_b, new_bw);
+		__dl_add(rq_dl_b, new_bw);
+		err = 0;
+	} else if (dl_policy(policy) && task_has_dl_policy(p) && !__dl_overflow(glob_dl_b, cpus, p->dl.dl_bw, new_bw)) {
+		__dl_clear(glob_dl_b, p->dl.dl_bw);
+		__dl_clear(rq_dl_b, p->dl.dl_bw);
+		
+		__dl_add(glob_dl_b, new_bw);
+		__dl_add(rq_dl_b, new_bw);
+		err = 0;
+	} else if (!dl_policy(policy) && task_has_dl_policy(p)) {
+		__dl_clear(glob_dl_b, p->dl.dl_bw);
+		__dl_clear(rq_dl_b, p->dl.dl_bw);
+		err = 0;
+	}
+	raw_spin_unlock(&rq_dl_b->lock);
+	raw_spin_unlock(&glob_dl_b->lock);
+#else
 	raw_spin_lock(&dl_b->lock);
 	cpus = dl_bw_cpus(task_cpu(p));
 	if (dl_policy(policy) && !task_has_dl_policy(p) &&
@@ -2105,7 +2138,7 @@ static int dl_overflow(struct task_struct *p, int policy,
 		err = 0;
 	}
 	raw_spin_unlock(&dl_b->lock);
-
+#endif
 	return err;
 }
 

@@ -170,6 +170,7 @@ static inline int dl_bandwidth_enabled(void)
 }
 
 extern struct dl_bw *dl_bw_of(int i);
+extern struct dl_bw *dl_bw_of_rq(int i);
 
 struct dl_bw {
 	raw_spinlock_t lock;
@@ -450,6 +451,8 @@ struct dl_rq {
 
 	unsigned long dl_nr_running;
 
+	struct dl_bw dl_bw;
+
 #ifdef CONFIG_SMP
 	/*
 	 * Deadline values of the currently executing and the
@@ -473,7 +476,6 @@ struct dl_rq {
 	struct rb_root pushable_dl_tasks_root;
 	struct rb_node *pushable_dl_tasks_leftmost;
 #else
-	struct dl_bw dl_bw;
 	struct dl_stats dl_stats;
 #endif
 };

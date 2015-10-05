@@ -83,6 +83,7 @@ void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 {
 	dl_rq->rb_root = RB_ROOT;
 
+	init_dl_bw(&dl_rq->dl_bw);
 #ifdef CONFIG_SMP
 	/* zero means no -deadline tasks */
 	dl_rq->earliest_dl.curr = dl_rq->earliest_dl.next = 0;
@@ -91,7 +92,6 @@ void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 	dl_rq->overloaded = 0;
 	dl_rq->pushable_dl_tasks_root = RB_ROOT;
 #else
-	init_dl_bw(&dl_rq->dl_bw);
 	init_dl_stats(&dl_rq->dl_stats);
 #endif
 }
@@ -1104,15 +1104,27 @@ static void task_fork_dl(struct task_struct *p)
 static void task_dead_dl(struct task_struct *p)
 {
 	struct hrtimer *timer = &p->dl.dl_timer;
+#ifdef CONFIG_SMP
+	struct dl_bw *glob_dl_b = dl_bw_of(task_cpu(p));
+	struct dl_bw *rq_dl_b = dl_bw_of_rq(task_cpu(p));
+#else
 	struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
-
+#endif
 	/*
 	 * Since we are TASK_DEAD we won't slip out of the domain!
 	 */
+#ifdef CONFIG_SMP
+	raw_spin_lock_irq(&glob_dl_b->lock);
+	raw_spin_lock_irq(&rq_dl_b->lock);
+	glob_dl_b->total_bw -= p->dl.dl_bw;
+	rq_dl_b->total_bw -= p->dl.dl_bw;
+	raw_spin_unlock_irq(&rq_dl_b->lock);
+	raw_spin_unlock_irq(&glob_dl_b->lock);
+#else
 	raw_spin_lock_irq(&dl_b->lock);
 	dl_b->total_bw -= p->dl.dl_bw;
 	raw_spin_unlock_irq(&dl_b->lock);
-
+#endif
 	hrtimer_cancel(timer);
 }
 
