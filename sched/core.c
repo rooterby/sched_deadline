@@ -2035,7 +2035,49 @@ static inline int dl_bw_cpus(int i)
 	for_each_cpu_and(i, rd->span, cpu_active_mask)
 		cpus++;
 
+	printk("[dl_bw_cpus]=> cpus: %d\n", cpus);
 	return cpus;
+}
+
+static inline u64 dl_bw_allowed(struct task_struct *p)
+{
+	u64 allowed_bw = 0;
+	struct dl_bw *rq_dl_b;
+	int i;
+
+	rcu_lockdep_assert(rcu_read_lock_sched_held(), "sched RCU must be held");
+	
+	for_each_cpu_mask(i, p->cpus_allowed) {
+		rq_dl_b = dl_bw_of_rq(i);
+		
+		raw_spin_lock(&rq_dl_b->lock);
+		allowed_bw += rq_dl_b->total_bw;
+		raw_spin_unlock(&rq_dl_b->lock);
+	}
+
+	printk("[dl_bw_allowed]=> allowed_bw: %lld\n", allowed_bw);
+	
+	return allowed_bw;
+}
+
+static inline u64 total_allowed_bw(struct task_struct *p)
+{
+	u64 total_bw = 0;
+	struct dl_bw *rq_dl_b;
+	int i;
+
+	rcu_lockdep_assert(rcu_read_lock_sched_held(), "sched RCU must be held");
+
+	for_each_cpu_mask(i, p->cpus_allowed) {
+		rq_dl_b = dl_bw_of_rq(i);
+
+		raw_spin_lock(&rq_dl_b->lock);
+		total_bw += rq_dl_b->bw;
+		raw_spin_unlock(&rq_dl_b->lock);
+	}
+	printk("[total_allowed_bw]=> total_bw: %lld\n", total_bw);
+
+	return total_bw;
 }
 
 #else
@@ -2047,6 +2089,16 @@ inline struct dl_bw *dl_bw_of(int i)
 static inline int dl_bw_cpus(int i)
 {
 	return 1;
+}
+
+static inline u64 dl_bw_allowed(struct task_struct *p)
+{
+	return task_rq(p)->dl.dl_bw.total_bw;
+}
+
+static inline u64 total_allowed_bw(struct task_struct *p)
+{
+	return task_rq(p)->dl.dl_bw.bw;
 }
 #endif
 
@@ -2067,6 +2119,13 @@ bool __dl_overflow(struct dl_bw *dl_b, int cpus, u64 old_bw, u64 new_bw)
 {
 	return dl_b->bw != -1 &&
 	       dl_b->bw * cpus < dl_b->total_bw - old_bw + new_bw;
+}
+
+static inline
+bool __dl_overflow_allowed(u64 total_allowed_bw, u64 current_bw, u64 new_bw)
+{
+	return current_bw != 0 && 
+		total_allowed_bw < current_bw + new_bw;
 }
 
 /*
@@ -3615,19 +3674,51 @@ change:
 #endif
 #ifdef CONFIG_SMP
 		if (dl_bandwidth_enabled() && dl_policy(policy)) {
-			cpumask_t *span = rq->rd->span;
-
+			// This code does not allow affinity mask of -deadline tasks
 			/*
 			 * Don't allow tasks with an affinity mask smaller than
 			 * the entire root_domain to become SCHED_DEADLINE. We
 			 * will also fail if there's no bandwidth available.
 			 */
+			/*
+			cpumask_t *span = rq->rd->span;
+			
 			if (!cpumask_subset(span, &p->cpus_allowed) ||
 			    rq->rd->dl_bw.bw == 0) {
 				task_rq_unlock(rq, p, &flags);
 				printk("__sched_setscheduler: SCHED_DEADLINE affinity subset checking\n");
 				return -EPERM;
 			}
+			*/
+
+			/*
+			 * Modified: Allow affinity mask of -deadline tasks
+			 * and check whether the cpus in affinity mask has enough bandwidth for new -deadline tasks
+			 */
+
+			cpumask_t *span = rq->rd->span;
+			
+			if (rq->rd->dl_bw.bw == 0) {
+				task_rq_unlock(rq, p, &flags);
+				return -EPERM;
+			}
+
+			if (!cpumask_subset(span, &p->cpus_allowed)) {
+				u64 current_bw = dl_bw_allowed(p);
+				u64 total = total_allowed_bw(p);
+
+				u64 period = attr->sched_period ?: attr->sched_deadline;
+				u64 runtime = attr->sched_runtime;
+				u64 new_bw = dl_policy(policy) ? to_ratio(period, runtime) : 0;
+				
+				if (__dl_overflow_allowed(total, current_bw, new_bw)) {
+					printk("__sched_setscheduler: dl_subset and bandwidth checking in cpu_allowed_ptr\n");
+					task_rq_unlock(rq, p, &flags);				
+					return -EBUSY;
+				}
+			}
+			// check functions of the cpus bandwidth in affinity mask(p->cpu_allowed)
+			// for_each_cpu_mask
 		}
 #endif
 	}
