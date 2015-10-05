@@ -440,7 +440,7 @@ struct dl_stats {
 	u64 avg_bw;
 
 	struct dl_rq *busiest;
-}
+};
 
 /* Deadline class' related fields in a runqueue */
 struct dl_rq {

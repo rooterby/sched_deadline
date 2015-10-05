@@ -2110,7 +2110,7 @@ static int dl_overflow(struct task_struct *p, int policy,
 }
 
 extern void init_dl_bw(struct dl_bw *dl_b);
-extern void init_dl_stat(struct dl_stats *dl_stats);
+extern void init_dl_stats(struct dl_stats *dl_stats);
 
 /*
  * wake_up_new_task - wake up a newly created task for the first time.
