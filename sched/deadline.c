@@ -71,13 +71,14 @@ void init_dl_bw(struct dl_bw *dl_b)
 
 void init_dl_stats(struct dl_stats *dl_stats)
 {
-	raw_spin_lock_init(&dl_stats->dl_stat_lock);
+	raw_spin_lock_init(&dl_stats->dl_stats_lock);
 	
 	dl_stats->sum_dl_nr_running = 0;
 	dl_stats->avg_bw = 0;
 
 	dl_stats->busiest = NULL;
 }
+
 
 void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 {
