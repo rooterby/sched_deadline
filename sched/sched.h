@@ -433,34 +433,7 @@ struct rt_rq {
 	struct task_group *tg;
 #endif
 };
-
-
-struct dl_stats {
-	raw_spinlock_t dl_stats_lock;
-
-	unsigned int sum_dl_nr_running;
-	u64 avg_bw;
-
-	struct dl_rq *busiest;
-};
-
-
-/*
-struct glob_dl_rq {
-	// runqueue's lock for synchronization
-	raw_spinlock_t glob_dl_lock;
-
-	//ruqueue is an rbtree, ordered by deadline
-	struct rb_root rb_root;
-	struct rb_node *rb_leftmost;
-
-	//Counts the number of all -deadline tasks
-	unsigned long glob_dl_nr_running;
-
-	u64 earliest_deadline;
-};
-*/
-
+	
 /* Deadline class' related fields in a runqueue */
 struct dl_rq {
 	/* runqueue is an rbtree, ordered by deadline */
@@ -470,7 +443,6 @@ struct dl_rq {
 	unsigned long dl_nr_running;
 
 	struct dl_bw dl_bw;
-
 #ifdef CONFIG_SMP
 	/*
 	 * Deadline values of the currently executing and the
@@ -493,8 +465,6 @@ struct dl_rq {
 	 */
 	struct rb_root pushable_dl_tasks_root;
 	struct rb_node *pushable_dl_tasks_leftmost;
-#else
-	struct dl_stats dl_stats;
 #endif
 };
 
@@ -525,7 +495,6 @@ struct root_domain {
 	cpumask_var_t dlo_mask;
 	atomic_t dlo_count;
 	struct dl_bw dl_bw;
-	struct dl_stats dl_stats;
 	struct cpudl cpudl;
 
 	/*
@@ -1156,7 +1125,7 @@ struct sched_class {
 	void (*set_curr_task) (struct rq *rq);
 	void (*task_tick) (struct rq *rq, struct task_struct *p, int queued);
 	void (*task_fork) (struct task_struct *p);
-	void (*task_dead) (struct task_struct *p);
+	void (*task_dead) (struct rq *rq, struct task_struct *p);
 
 	void (*switched_from) (struct rq *this_rq, struct task_struct *task);
 	void (*switched_to) (struct rq *this_rq, struct task_struct *task);

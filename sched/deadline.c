@@ -69,22 +69,10 @@ void init_dl_bw(struct dl_bw *dl_b)
 	dl_b->total_bw = 0;
 }
 
-void init_dl_stats(struct dl_stats *dl_stats)
-{
-	raw_spin_lock_init(&dl_stats->dl_stats_lock);
-	
-	dl_stats->sum_dl_nr_running = 0;
-	dl_stats->avg_bw = 0;
-
-	dl_stats->busiest = NULL;
-}
-
-
 void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 {
 	dl_rq->rb_root = RB_ROOT;
 
-	init_dl_bw(&dl_rq->dl_bw);
 #ifdef CONFIG_SMP
 	/* zero means no -deadline tasks */
 	dl_rq->earliest_dl.curr = dl_rq->earliest_dl.next = 0;
@@ -93,7 +81,7 @@ void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 	dl_rq->overloaded = 0;
 	dl_rq->pushable_dl_tasks_root = RB_ROOT;
 #else
-	init_dl_stats(&dl_rq->dl_stats);
+	init_dl_bw(&dl_rq->dl_bw);
 #endif
 }
 
@@ -1102,12 +1090,12 @@ static void task_fork_dl(struct task_struct *p)
 	 */
 }
 
-static void task_dead_dl(struct task_struct *p)
+static void task_dead_dl(struct rq *rq, struct task_struct *p)
 {
 	struct hrtimer *timer = &p->dl.dl_timer;
 #ifdef CONFIG_SMP
 	struct dl_bw *glob_dl_b = dl_bw_of(task_cpu(p));
-	struct dl_bw *rq_dl_b = dl_bw_of_rq(task_cpu(p));
+	struct dl_bw *rq_dl_b = &rq->dl.dl_bw;
 #else
 	struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
 #endif
@@ -1115,12 +1103,18 @@ static void task_dead_dl(struct task_struct *p)
 	 * Since we are TASK_DEAD we won't slip out of the domain!
 	 */
 #ifdef CONFIG_SMP
-	raw_spin_lock_irq(&glob_dl_b->lock);
-	raw_spin_lock_irq(&rq_dl_b->lock);
+	raw_spin_lock(&glob_dl_b->lock);
+	raw_spin_lock_nested(&rq_dl_b->lock, SINGLE_DEPTH_NESTING);
+
 	glob_dl_b->total_bw -= p->dl.dl_bw;
 	rq_dl_b->total_bw -= p->dl.dl_bw;
-	raw_spin_unlock_irq(&rq_dl_b->lock);
-	raw_spin_unlock_irq(&glob_dl_b->lock);
+	
+	printk("[task_dead_dl] glob_dl_b->total_bw: %lld\n", glob_dl_b->total_bw);
+	printk("[task_dead_dl] rq_dl_b->total_bw: %lld\n", rq_dl_b->total_bw);
+	
+	raw_spin_unlock(&rq_dl_b->lock);
+	raw_spin_unlock(&glob_dl_b->lock);
+
 #else
 	raw_spin_lock_irq(&dl_b->lock);
 	dl_b->total_bw -= p->dl.dl_bw;
@@ -1340,6 +1334,7 @@ static int push_dl_task(struct rq *rq)
 {
 	struct task_struct *next_task;
 	struct rq *later_rq;
+	struct dl_bw *dst_dl_bw, *src_dl_bw;
 
 	if (!rq->dl.overloaded)
 		return 0;
@@ -1397,10 +1392,25 @@ retry:
 		next_task = task;
 		goto retry;
 	}
+	
+	src_dl_bw = &rq->dl.dl_bw;
+	dst_dl_bw = &later_rq->dl.dl_bw;
 
+	raw_spin_lock(&src_dl_bw->lock);
+	raw_spin_lock_nested(&dst_dl_bw->lock, SINGLE_DEPTH_NESTING);
+
+	printk("[push_dl_task][before]=> src_dl_bw[%d]->total_bw: %lld, dst_dl_bw[%d]->total_bw: %lld\n", rq->cpu, src_dl_bw->total_bw, later_rq->cpu, dst_dl_bw->total_bw);
 	deactivate_task(rq, next_task, 0);
+	src_dl_bw->total_bw -= next_task->dl.dl_bw;
+
 	set_task_cpu(next_task, later_rq->cpu);
 	activate_task(later_rq, next_task, 0);
+	dst_dl_bw->total_bw += next_task->dl.dl_bw;
+
+	printk("[push_dl_task][after]=> src_dl_bw[%d]->total_bw: %lld, dst_dl_bw[%d]->total_bw: %lld\n", rq->cpu, src_dl_bw->total_bw, later_rq->cpu, dst_dl_bw->total_bw);
+
+	raw_spin_unlock(&dst_dl_bw->lock);
+	raw_spin_unlock(&src_dl_bw->lock);
 
 	resched_curr(later_rq);
 
@@ -1424,6 +1434,7 @@ static int pull_dl_task(struct rq *this_rq)
 	int this_cpu = this_rq->cpu, ret = 0, cpu;
 	struct task_struct *p;
 	struct rq *src_rq;
+	struct dl_bw *dst_dl_bw, *src_dl_bw;
 	u64 dmin = LONG_MAX;
 
 	if (likely(!dl_overloaded(this_rq)))
@@ -1462,6 +1473,11 @@ static int pull_dl_task(struct rq *this_rq)
 
 		p = pick_next_earliest_dl_task(src_rq, this_cpu);
 
+		if (!cpumask_test_cpu(this_cpu, &p->cpus_allowed)) {
+			double_unlock_balance(this_rq, src_rq);
+			printk("[pull_dl_task]: cpumask_test_cpu checking\n");
+			continue;
+		}
 		/*
 		 * We found a task to be pulled if:
 		 *  - it preempts our current (if there's one),
@@ -1481,12 +1497,29 @@ static int pull_dl_task(struct rq *this_rq)
 			if (dl_time_before(p->dl.deadline,
 					   src_rq->curr->dl.deadline))
 				goto skip;
+			
+			src_dl_bw = &src_rq->dl.dl_bw;
+			dst_dl_bw = &this_rq->dl.dl_bw;
 
 			ret = 1;
 
+			raw_spin_lock(&src_dl_bw->lock);
+			raw_spin_lock_nested(&dst_dl_bw->lock, SINGLE_DEPTH_NESTING);
+
+			printk("[pull_dl_task][before]=> src_dl_bw[%d]->total_bw: %lld, dst_dl_bw[%d]->total_bw: %lld\n", src_rq->cpu, src_dl_bw->total_bw, this_rq->cpu, dst_dl_bw->total_bw);
+			
 			deactivate_task(src_rq, p, 0);
+			src_dl_bw->total_bw -= p->dl.dl_bw;
+
 			set_task_cpu(p, this_cpu);
 			activate_task(this_rq, p, 0);
+			dst_dl_bw->total_bw += p->dl.dl_bw;
+					
+			printk("[pull_dl_task][after]=> src_dl_bw[%d]->total_bw: %lld, dst_dl_bw[%d]->total_bw: %lld\n", src_rq->cpu, src_dl_bw->total_bw, this_rq->cpu, dst_dl_bw->total_bw);
+
+			raw_spin_unlock(&dst_dl_bw->lock);
+			raw_spin_unlock(&src_dl_bw->lock);
+
 			dmin = p->dl.deadline;
 
 			/* Is there any other task even earlier? */
