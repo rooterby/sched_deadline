@@ -68,17 +68,6 @@ void init_dl_bw(struct dl_bw *dl_b)
 	raw_spin_unlock(&def_dl_bandwidth.dl_runtime_lock);
 	dl_b->total_bw = 0;
 }
-/*
-void init_dl_stats(struct dl_stats *dl_stats)
-{
-	raw_spin_lock_init(&dl_stats->dl_stat_lock);
-	
-	dl_stats->sum_dl_nr_running = 0;
-	dl_stats->avg_bw = 0;
-
-	dl_stats->busiest = NULL;
-}
-*/
 
 void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 {
@@ -1101,12 +1090,12 @@ static void task_fork_dl(struct task_struct *p)
 	 */
 }
 
-static void task_dead_dl(struct task_struct *p)
+static void task_dead_dl(struct rq *rq, struct task_struct *p)
 {
 	struct hrtimer *timer = &p->dl.dl_timer;
 #ifdef CONFIG_SMP
 	struct dl_bw *glob_dl_b = dl_bw_of(task_cpu(p));
-	struct dl_bw *rq_dl_b = dl_bw_of_rq(task_cpu(p));
+	struct dl_bw *rq_dl_b = &rq->dl.dl_bw;
 #else
 	struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
 #endif
@@ -1114,15 +1103,17 @@ static void task_dead_dl(struct task_struct *p)
 	 * Since we are TASK_DEAD we won't slip out of the domain!
 	 */
 #ifdef CONFIG_SMP
-	raw_spin_lock_irq(&glob_dl_b->lock);
-	
+	raw_spin_lock(&glob_dl_b->lock);
+	raw_spin_lock_nested(&rq_dl_b->lock, SINGLE_DEPTH_NESTING);
+
 	glob_dl_b->total_bw -= p->dl.dl_bw;
 	rq_dl_b->total_bw -= p->dl.dl_bw;
 	
 	printk("[task_dead_dl] glob_dl_b->total_bw: %lld\n", glob_dl_b->total_bw);
 	printk("[task_dead_dl] rq_dl_b->total_bw: %lld\n", rq_dl_b->total_bw);
 	
-	raw_spin_unlock_irq(&glob_dl_b->lock);
+	raw_spin_unlock(&rq_dl_b->lock);
+	raw_spin_unlock(&glob_dl_b->lock);
 
 #else
 	raw_spin_lock_irq(&dl_b->lock);
