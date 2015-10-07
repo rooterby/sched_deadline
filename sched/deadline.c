@@ -73,6 +73,7 @@ void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 {
 	dl_rq->rb_root = RB_ROOT;
 
+	init_dl_bw(&dl_rq->dl_bw);
 #ifdef CONFIG_SMP
 	/* zero means no -deadline tasks */
 	dl_rq->earliest_dl.curr = dl_rq->earliest_dl.next = 0;
@@ -80,8 +81,6 @@ void init_dl_rq(struct dl_rq *dl_rq, struct rq *rq)
 	dl_rq->dl_nr_migratory = 0;
 	dl_rq->overloaded = 0;
 	dl_rq->pushable_dl_tasks_root = RB_ROOT;
-#else
-	init_dl_bw(&dl_rq->dl_bw);
 #endif
 }
 
