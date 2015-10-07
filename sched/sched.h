@@ -433,7 +433,7 @@ struct rt_rq {
 	struct task_group *tg;
 #endif
 };
-
+/*
 struct dl_stats {
 	raw_spinlock_t dl_stat_lock;
 
@@ -442,7 +442,7 @@ struct dl_stats {
 
 	struct dl_rq *busiest;
 };
-
+*/
 /* Deadline class' related fields in a runqueue */
 struct dl_rq {
 	/* runqueue is an rbtree, ordered by deadline */
@@ -452,7 +452,6 @@ struct dl_rq {
 	unsigned long dl_nr_running;
 
 	struct dl_bw dl_bw;
-
 #ifdef CONFIG_SMP
 	/*
 	 * Deadline values of the currently executing and the
@@ -475,8 +474,6 @@ struct dl_rq {
 	 */
 	struct rb_root pushable_dl_tasks_root;
 	struct rb_node *pushable_dl_tasks_leftmost;
-#else
-	struct dl_stats dl_stats;
 #endif
 };
 
@@ -508,7 +505,6 @@ struct root_domain {
 	atomic_t dlo_count;
 	struct dl_bw dl_bw;
 	struct cpudl cpudl;
-	struct dl_stats dl_stats;
 
 	/*
 	 * The "RT overload" flag: it gets set if a CPU has more than

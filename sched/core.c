@@ -2019,6 +2019,7 @@ inline struct dl_bw *dl_bw_of(int i)
 			   "sched RCU must be held");
 	return &cpu_rq(i)->rd->dl_bw;
 }
+
 inline struct dl_bw *dl_bw_of_rq(int i)
 {
 	rcu_lockdep_assert(rcu_read_lock_sched_held(), "sched RCU must be held");
@@ -2035,49 +2036,71 @@ static inline int dl_bw_cpus(int i)
 	for_each_cpu_and(i, rd->span, cpu_active_mask)
 		cpus++;
 
-	printk("[dl_bw_cpus]=> cpus: %d\n", cpus);
+	return cpus;
+}
+
+static inline u64 dl_bw_allowed_cpus(struct task_struct *p)
+{
+	int i;
+	int cpus = 0;
+
+	rcu_lockdep_assert(rcu_read_lock_sched_held(), "sched RCU must be held");
+
+	for_each_cpu_mask(i, p->cpus_allowed)
+		cpus++;
+
 	return cpus;
 }
 
 static inline u64 dl_bw_allowed(struct task_struct *p)
 {
-	u64 allowed_bw = 0;
-	struct dl_bw *rq_dl_b;
+	u64 current_bw = 0;
 	int i;
+	struct dl_bw *rq_dl_b;
 
 	rcu_lockdep_assert(rcu_read_lock_sched_held(), "sched RCU must be held");
 	
 	for_each_cpu_mask(i, p->cpus_allowed) {
-		rq_dl_b = dl_bw_of_rq(i);
-		
+		rq_dl_b = &cpu_rq(i)->dl.dl_bw;
+
 		raw_spin_lock(&rq_dl_b->lock);
-		allowed_bw += rq_dl_b->total_bw;
+		current_bw += rq_dl_b->total_bw;
 		raw_spin_unlock(&rq_dl_b->lock);
 	}
 
-	printk("[dl_bw_allowed]=> allowed_bw: %lld\n", allowed_bw);
-	
-	return allowed_bw;
+	return current_bw;
 }
 
-static inline u64 total_allowed_bw(struct task_struct *p)
+static inline u64 dl_bw_mask(cpumask_var_t new_mask)
 {
-	u64 total_bw = 0;
-	struct dl_bw *rq_dl_b;
+	u64 mask_bw = 0;
 	int i;
-
+	struct dl_bw *rq_dl_b;
+	
 	rcu_lockdep_assert(rcu_read_lock_sched_held(), "sched RCU must be held");
-
-	for_each_cpu_mask(i, p->cpus_allowed) {
-		rq_dl_b = dl_bw_of_rq(i);
+	
+	for_each_cpu_and(i, new_mask, cpu_active_mask) {
+		rq_dl_b = &cpu_rq(i)->dl.dl_bw;
 
 		raw_spin_lock(&rq_dl_b->lock);
-		total_bw += rq_dl_b->bw;
+		mask_bw += rq_dl_b->total_bw;
 		raw_spin_unlock(&rq_dl_b->lock);
 	}
-	printk("[total_allowed_bw]=> total_bw: %lld\n", total_bw);
+	
+	return mask_bw;
+}
 
-	return total_bw;
+static inline int dl_bw_mask_cpus(cpumask_var_t new_mask)
+{
+	int i;
+	int cpus = 0;
+
+	rcu_lockdep_assert(rcu_read_lock_sched_held(), "sched RCU must be held");
+	
+	for_each_cpu_and(i, new_mask, cpu_active_mask)
+		cpus++;
+
+	return cpus;
 }
 
 #else
@@ -2091,41 +2114,32 @@ static inline int dl_bw_cpus(int i)
 	return 1;
 }
 
-static inline u64 dl_bw_allowed(struct task_struct *p)
-{
-	return task_rq(p)->dl.dl_bw.total_bw;
-}
-
-static inline u64 total_allowed_bw(struct task_struct *p)
-{
-	return task_rq(p)->dl.dl_bw.bw;
-}
 #endif
 
-static inline
+static inline 
 void __dl_clear(struct dl_bw *dl_b, u64 tsk_bw)
 {
 	dl_b->total_bw -= tsk_bw;
 }
 
-static inline
+static inline 
 void __dl_add(struct dl_bw *dl_b, u64 tsk_bw)
 {
 	dl_b->total_bw += tsk_bw;
 }
 
-static inline
+static inline 
 bool __dl_overflow(struct dl_bw *dl_b, int cpus, u64 old_bw, u64 new_bw)
 {
 	return dl_b->bw != -1 &&
 	       dl_b->bw * cpus < dl_b->total_bw - old_bw + new_bw;
 }
 
-static inline
-bool __dl_overflow_allowed(u64 total_allowed_bw, u64 current_bw, u64 new_bw)
+static inline 
+bool __dl_overflow_allowed(struct dl_bw *dl_b, int cpus, u64 current_bw, u64 old_bw, u64 new_bw)
 {
-	return current_bw != 0 && 
-		total_allowed_bw < current_bw + new_bw;
+	return dl_b->bw != -1 &&
+		dl_b->bw * cpus < current_bw - old_bw + new_bw;
 }
 
 /*
@@ -2160,11 +2174,13 @@ static int dl_overflow(struct task_struct *p, int policy,
 	 */
 #ifdef CONFIG_SMP
 	raw_spin_lock(&glob_dl_b->lock);
-	raw_spin_lock(&rq_dl_b->lock);
 	cpus = dl_bw_cpus(task_cpu(p));
 	if ( dl_policy(policy) && !task_has_dl_policy(p) && !__dl_overflow(glob_dl_b, cpus, 0, new_bw)) {
 		__dl_add(glob_dl_b, new_bw);
 		__dl_add(rq_dl_b, new_bw);
+
+		printk("[dl_overflow1] glob_dl_b->total_bw: %lld\n", glob_dl_b->total_bw);
+		printk("[dl_overflow1] rq_dl_b->total_bw: %lld\n", rq_dl_b->total_bw);
 		err = 0;
 	} else if (dl_policy(policy) && task_has_dl_policy(p) && !__dl_overflow(glob_dl_b, cpus, p->dl.dl_bw, new_bw)) {
 		__dl_clear(glob_dl_b, p->dl.dl_bw);
@@ -2172,14 +2188,19 @@ static int dl_overflow(struct task_struct *p, int policy,
 		
 		__dl_add(glob_dl_b, new_bw);
 		__dl_add(rq_dl_b, new_bw);
+		
+		printk("[dl_overflow2] glob_dl_b->total_bw: %lld\n", glob_dl_b->total_bw);
+		printk("[dl_overflow2] rq_dl_b->total_bw: %lld\n", rq_dl_b->total_bw);
 		err = 0;
 	} else if (!dl_policy(policy) && task_has_dl_policy(p)) {
 		__dl_clear(glob_dl_b, p->dl.dl_bw);
 		__dl_clear(rq_dl_b, p->dl.dl_bw);
 		err = 0;
+		printk("[dl_overflow3] glob_dl_b->total_bw: %lld\n", glob_dl_b->total_bw);
+		printk("[dl_overflow3] rq_dl_b->total_bw: %lld\n", rq_dl_b->total_bw);
 	}
-	raw_spin_unlock(&rq_dl_b->lock);
 	raw_spin_unlock(&glob_dl_b->lock);
+
 #else
 	raw_spin_lock(&dl_b->lock);
 	cpus = dl_bw_cpus(task_cpu(p));
@@ -2197,12 +2218,13 @@ static int dl_overflow(struct task_struct *p, int policy,
 		err = 0;
 	}
 	raw_spin_unlock(&dl_b->lock);
+
 #endif
 	return err;
 }
 
 extern void init_dl_bw(struct dl_bw *dl_b);
-extern void init_dl_stats(struct dl_stats *dl_stats);
+//extern void init_dl_stats(struct dl_stats *dl_stats);
 
 /*
  * wake_up_new_task - wake up a newly created task for the first time.
@@ -3705,17 +3727,22 @@ change:
 
 			if (!cpumask_subset(span, &p->cpus_allowed)) {
 				u64 current_bw = dl_bw_allowed(p);
-				u64 total = total_allowed_bw(p);
+				int cpus = dl_bw_allowed_cpus(p);
+				struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
 
 				u64 period = attr->sched_period ?: attr->sched_deadline;
 				u64 runtime = attr->sched_runtime;
 				u64 new_bw = dl_policy(policy) ? to_ratio(period, runtime) : 0;
+			
+				raw_spin_lock(&dl_b->lock);
 				
-				if (__dl_overflow_allowed(total, current_bw, new_bw)) {
+				if (__dl_overflow_allowed(dl_b, cpus, current_bw, 0, new_bw)) {
 					printk("__sched_setscheduler: dl_subset and bandwidth checking in cpu_allowed_ptr\n");
+					raw_spin_unlock(&dl_b->lock);
 					task_rq_unlock(rq, p, &flags);				
 					return -EBUSY;
 				}
+				raw_spin_unlock(&dl_b->lock);
 			}
 			// check functions of the cpus bandwidth in affinity mask(p->cpu_allowed)
 			// for_each_cpu_mask
@@ -4216,10 +4243,31 @@ long sched_setaffinity(pid_t pid, const struct cpumask *in_mask)
 #ifdef CONFIG_SMP
 	if (task_has_dl_policy(p) && dl_bandwidth_enabled()) {
 		rcu_read_lock();
+
 		if (!cpumask_subset(task_rq(p)->rd->span, new_mask)) {
-			retval = -EBUSY;
-			rcu_read_unlock();
-			goto out_free_new_mask;
+			struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
+			u64 current_bw = dl_bw_mask(new_mask);
+			int cpus = dl_bw_mask_cpus(new_mask);
+			int on_cpu = task_cpu(p);
+
+			raw_spin_lock(&dl_b->lock);
+			if (cpumask_test_cpu(on_cpu, new_mask)) {
+				if (__dl_overflow_allowed(dl_b, cpus, current_bw, 0, 0)) {
+					retval = -EBUSY;
+					raw_spin_unlock(&dl_b->lock);
+					rcu_read_unlock();
+					goto out_free_new_mask;
+				}
+			}
+			else {
+				if (__dl_overflow_allowed(dl_b, cpus, current_bw, 0, p->dl.dl_bw)) {
+					retval = -EBUSY;
+					raw_spin_unlock(&dl_b->lock);
+					rcu_read_unlock();
+					goto out_free_new_mask;
+				}
+			}
+			raw_spin_unlock(&dl_b->lock);
 		}
 		rcu_read_unlock();
 	}
@@ -5735,7 +5783,6 @@ static int init_rootdomain(struct root_domain *rd)
 		goto free_dlo_mask;
 
 	init_dl_bw(&rd->dl_bw);
-	init_dl_stats(&rd->dl_stats);
 
 	if (cpudl_init(&rd->cpudl) != 0)
 		goto free_dlo_mask;
